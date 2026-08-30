@@ -134,6 +134,7 @@ All detection is synchronous own-property / attribute reads on DOM nodes the fra
 
 ## Known limitations
 
+- **React 19 removed `fiber._debugSource`.** On a React 19 app, `sourcePath` for `source: "react"` comes back `null` unless the project uses a Babel/SWC JSX-source plugin that emits `data-inspector-*`-style attributes (picked up by the opportunistic fill). React 18 and earlier dev builds still populate it. Name/ancestry/confidence are unaffected.
 - **Production builds lose most of this.** `_debugSource`, `__svelte_meta`, `__file`, `data-astro-source-*` are dev-only. Minifiers rename components to one or two characters. In a production bundle this feature typically returns `name: <mangled or null>`, `confidence: "low"`, `sourcePath: null` — better-labeled than Feature 2's silent bad guess, but not more informative. The realistic use case is a developer running their app in `dev` mode locally, which is also the case where `sourcePath` is most useful.
 - **React Server Components are invisible.** An RSC leaves no client-side fiber; only Client Components (`"use client"`) appear in the tree. Clicking inside a server-rendered region attributes to the nearest *client* component ancestor, or to nothing. There is no way to recover a server component's name from the browser.
 - **Solid, Qwik, Alpine, htmx, vanilla JS** expose no per-element component handle. These fall through to a `data-*` attribute if one happens to match, else `source: "none"`. Not a bug — there is no signal to read.

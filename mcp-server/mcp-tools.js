@@ -14,6 +14,13 @@ function summarize(a) {
     issueType: a.issueType,
     note: a.note,
     status: a.status,
+    // Feature 8 — enough component info for file-level triage ("which file
+    // does each open issue touch") without a get_annotation per item. The
+    // full component object (confidence, sourceLine, ancestry) is on the
+    // record get_annotation returns.
+    component: a.component
+      ? { name: a.component.name, source: a.component.source, sourcePath: a.component.sourcePath || null }
+      : null,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
   };

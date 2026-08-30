@@ -10,7 +10,7 @@ In scope:
 - Update `PROJECT.md` (repo layout, status, the Feature 2 bullet) and `CHROMEWEBSTORE.md` (version history + data-usage note), and add one forward-pointer line to `docs/features/feature-2-capture-engine/spec.md`.
 
 **Not** in scope:
-- Any change to `manifest.json` — no new permissions (all probes are synchronous DOM/attribute reads, same as Feature 2).
+- Any change to `manifest.json` beyond the `version` string bump (0.3.0 → 0.4.0, matching the prior per-feature convention) — no new permissions, no new `host_permissions`, no behavior flags (all probes are synchronous DOM/attribute reads, same as Feature 2).
 - Any change to `content/annotations.js`, `content/queue.js`, `content/picker.js`, `content/overlay.js`, `content/state.js`, or `background.js` — they all pass `component` through opaquely (verified: `annotations.js:1120`, `:764`, `:848`, `:1131`).
 - Any new MCP tool, any write path, any resolve/reopen logic — Phase 2.
 - Reconciling the detected component against the user's chosen Issue type.
@@ -443,5 +443,5 @@ Run each against a real running app, not a synthetic fixture:
 - [ ] Export a queue with a detected component: the Markdown `**Component:**` line shows `name (source, confidence)` and, when present, `— path:line`, plus a `**Component tree:**` breadcrumb when `ancestry.length > 1`.
 - [ ] `list_annotations` over MCP now includes a `component: { name, source, sourcePath }` object per item; `get_annotation` still returns the full record including `confidence`, `sourceLine`, `ancestry`.
 - [ ] Network tab across all of the above: **zero** requests — every probe is a synchronous property/attribute read. Same hard guardrail as Feature 2.
-- [ ] `manifest.json` is byte-for-byte unchanged by this feature.
+- [ ] `manifest.json`'s `permissions` and `host_permissions` are unchanged by this feature; only `version` moves (0.3.0 → 0.4.0).
 - [ ] Toggle inspection mode off and back on, re-select: still fires a correct enriched `spotcheck:element-captured` — the IIFE re-injection guard still holds.
