@@ -30,6 +30,7 @@ window.__spotcheck = window.__spotcheck || {};
   let bubblesLayer = null;
   let popupEl = null;
   let headerEl = null;
+  let componentEl = null; // Feature 8 — detected-component line under the header
   let issueTypeTrigger = null;
   let issueTypeLabel = null;
   let issueTypeMenu = null;
@@ -208,6 +209,21 @@ window.__spotcheck = window.__spotcheck || {};
       .popup-header { font-size: 12px; line-height: 22px; overflow-wrap: break-word; }
       .popup-header .muted { color: #7b7b7b; }
       .popup-header .selector { color: #77cff4; }
+      /* Feature 8 — detected component line, shown under the header only when
+         the MAIN-world probe returned something. Hidden otherwise. */
+      .popup-component {
+        display: none;
+        font-size: 11px;
+        line-height: 16px;
+        color: #7b7b7b;
+        overflow-wrap: break-word;
+        margin-top: -4px;
+      }
+      .popup-component.visible { display: block; }
+      .popup-component .glyph { color: #7b7b7b; }
+      .popup-component .name { color: #cecece; }
+      .popup-component .path { color: #77cff4; }
+      .popup-component .unverified { color: #7b7b7b; font-style: italic; }
       .popup-body { display: flex; flex-direction: column; gap: 12px; }
       .issue-type { position: relative; }
       .issue-type-trigger {
@@ -409,6 +425,12 @@ window.__spotcheck = window.__spotcheck || {};
     headerEl.appendChild(document.createTextNode(" "));
     headerEl.appendChild(selectorSpan);
     popupEl.appendChild(headerEl);
+
+    // --- Feature 8: detected component line (filled by renderComponentLine,
+    // from the capture cache on open and again when the probe answers) ----
+    componentEl = document.createElement("div");
+    componentEl.className = "popup-component";
+    popupEl.appendChild(componentEl);
 
     const bodyEl = document.createElement("div");
     bodyEl.className = "popup-body";
@@ -988,6 +1010,44 @@ window.__spotcheck = window.__spotcheck || {};
 
   // --- wiring: open/close/save/delete -------------------------------------
 
+  // Feature 8 — render the detected-component line. `component` is the object
+  // capture.js/component-probe.js produce ({ name, source, confidence,
+  // sourcePath, sourceLine, ancestry }) or null. Hidden unless there's a name
+  // or a source path to show.
+  function renderComponentLine(component) {
+    if (!componentEl) return;
+    const c = component || null;
+    if (!c || (!c.name && !c.sourcePath)) {
+      componentEl.textContent = "";
+      componentEl.classList.remove("visible");
+      return;
+    }
+    componentEl.textContent = "";
+    const glyph = document.createElement("span");
+    glyph.className = "glyph";
+    glyph.textContent = "⬡ "; // ⬡ — text glyph, no icon asset, same pattern as ⌄/🗑/↑
+    componentEl.appendChild(glyph);
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "name";
+    nameSpan.textContent = c.name || `${c.source} component`;
+    componentEl.appendChild(nameSpan);
+
+    if (c.sourcePath) {
+      const pathSpan = document.createElement("span");
+      pathSpan.className = "path";
+      pathSpan.textContent = ` · ${c.sourcePath}${c.sourceLine ? ":" + c.sourceLine : ""}`;
+      componentEl.appendChild(pathSpan);
+    }
+    if (c.confidence === "low") {
+      const flag = document.createElement("span");
+      flag.className = "unverified";
+      flag.textContent = c.name ? " · unverified" : " · name unavailable";
+      componentEl.appendChild(flag);
+    }
+    componentEl.classList.add("visible");
+  }
+
   function openPopupFor(el) {
     ensureHost();
     positionAllBubbles(); // make sure any existing bubble's position is current before anchoring the popup to it
@@ -998,6 +1058,10 @@ window.__spotcheck = window.__spotcheck || {};
     const selectorText = (activeRecord ? activeRecord.selector : cached && cached.selector) || "(selector unavailable)";
     headerEl.querySelector(".muted").textContent = activeRecord ? "Annotated" : "Annotating";
     headerEl.querySelector(".selector").textContent = selectorText;
+    // Feature 8 — component from the record (edit mode) or the capture cache
+    // (fresh draft). May be the empty placeholder until the probe answers,
+    // at which point the spotcheck:element-captured listener re-renders it.
+    renderComponentLine(activeRecord ? activeRecord.component : cached && cached.component);
 
     draftState = {
       issueType: activeRecord ? activeRecord.issueType : null,
@@ -1118,6 +1182,16 @@ window.__spotcheck = window.__spotcheck || {};
     if (!el) return;
 
     const data = { selector: e.detail.selector, styles: e.detail.styles, component: e.detail.component };
+    // Feature 8 — element-captured now fires twice per selection: once
+    // synchronously (component is the empty placeholder) and again once the
+    // MAIN-world probe answers (component filled). Keep whichever cache/record
+    // component is more informative rather than letting the first pass's
+    // placeholder clobber a real value from a prior capture.
+    const meaningful = (c) => !!(c && (c.name || c.sourcePath || c.source !== "none"));
+    const prev = latestCaptureByElement.get(el);
+    if (!meaningful(data.component) && prev && meaningful(prev.component)) {
+      data.component = prev.component;
+    }
     latestCaptureByElement.set(el, data); // always kept current, whether or not this element ends up annotated
 
     // If an annotation already exists (re-selecting an already-annotated
@@ -1128,7 +1202,15 @@ window.__spotcheck = window.__spotcheck || {};
     if (record) {
       record.selector = data.selector;
       record.styles = data.styles;
-      record.component = data.component;
+      if (meaningful(data.component) || !meaningful(record.component)) {
+        record.component = data.component;
+      }
+    }
+
+    // Feature 8 — keep the open popup's component line in sync as the probe
+    // result lands.
+    if (draftElement === el) {
+      renderComponentLine((record && record.component) || data.component);
     }
   });
 
@@ -1182,6 +1264,7 @@ window.__spotcheck = window.__spotcheck || {};
     bubblesLayer = null;
     popupEl = null;
     headerEl = null;
+    componentEl = null;
     issueTypeTrigger = null;
     issueTypeLabel = null;
     issueTypeMenu = null;

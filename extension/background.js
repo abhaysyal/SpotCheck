@@ -12,6 +12,13 @@ const CONTENT_FILES = [
   "content/export.js",
 ];
 
+// Feature 8 — injected into the page's MAIN world (a separate executeScript
+// call; one call can't span both worlds). It only reads framework internals
+// the ISOLATED-world scripts above can't see and answers capture.js over
+// window.postMessage — no DOM writes, no page globals added beyond one guard
+// flag. See docs/features/feature-8-component-name-extraction/spec.md.
+const MAIN_WORLD_FILES = ["content/component-probe.js"];
+
 // tabId -> boolean (inspection mode active). Presence in the map also means
 // the content scripts have already been injected for that tab. In-memory
 // only — resets on browser/service-worker restart, which is fine since
@@ -31,6 +38,18 @@ async function inject(tabId) {
       target: { tabId },
       files: CONTENT_FILES,
     });
+    // Best-effort — the extension works without the component probe (the
+    // component field just stays empty). A page that blocks MAIN-world
+    // injection must not break the rest of the injection above.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        files: MAIN_WORLD_FILES,
+      });
+    } catch (probeErr) {
+      console.warn("SpotCheck: component probe injection failed (non-fatal).", probeErr);
+    }
     return true;
   } catch (err) {
     console.warn("SpotCheck: could not inject into this tab.", err);

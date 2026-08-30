@@ -1,17 +1,22 @@
 # Feature 8 — Component Name Extraction — plan.md
 
-Implementation plan for an AI coding agent. Read `spec.md` first — it explains *why* this is an in-place rewrite of Feature 2's component detection rather than a new module, what the enriched `component` shape is, and which modern-library wrappers have to be unwrapped/filtered. This plan is the concrete order of operations.
+Implementation plan for an AI coding agent. Read `spec.md` first — it explains the two-world architecture, the enriched `component` shape, and which modern-library wrappers have to be unwrapped/filtered.
+
+> **Revised after building.** This plan's first draft assumed component detection could stay an in-place rewrite of `content/capture.js`'s `getComponentInfo`. That's wrong: `capture.js` runs in Chrome's **ISOLATED world**, where `el.__reactFiber$*` / `el.__vue__` / `window.__REACT_DEVTOOLS_GLOBAL_HOOK__` and every other framework internal are **invisible** — so Feature 2's React/Vue detection never actually worked on a real page. The detection logic below is correct, but it lives in a **new MAIN-world file, `content/component-probe.js`**, which `capture.js` talks to over `window.postMessage`. `spec.md`'s "The two-world problem" section is the full rationale. The step numbers below are kept; the code just lands in the probe, not `capture.js`.
 
 ## Scope reminder
 
 In scope:
-- Rewrite component detection inside `content/capture.js` to be modern-framework-aware (React with memo/forwardRef/library-wrapper unwrapping, Vue 3 `<script setup>`, Svelte, Angular, Web Components, Astro islands), and to also return **source file path/line**, a **confidence** flag, and the **component ancestry**.
-- Surface the new fields in `content/export.js`'s Markdown (Component line only) and in `mcp-server/mcp-tools.js`'s `list_annotations` summary.
-- Update `PROJECT.md` (repo layout, status, the Feature 2 bullet) and `CHROMEWEBSTORE.md` (version history + data-usage note), and add one forward-pointer line to `docs/features/feature-2-capture-engine/spec.md`.
+- **New file `content/component-probe.js`** (MAIN world) holding all framework detection: React (memo/forwardRef/library-wrapper unwrapping), Vue 2/3 `<script setup>`, Svelte, Angular, Web Components, Astro islands — returning `{ name, source, confidence, sourcePath, sourceLine, ancestry }`.
+- **`content/capture.js`**: drop the framework logic, keep `getSelectorPath`/`getRelevantStyles`, add the `postMessage` round-trip and the second (enriched) `spotcheck:element-captured` dispatch.
+- **`extension/background.js`**: second `executeScript` call with `world: "MAIN"` for the probe (non-fatal on failure).
+- **`content/annotations.js`**: popup component line + the `element-captured` clobber guard.
+- **`content/export.js`** Markdown Component line + **`mcp-server/mcp-tools.js`** `list_annotations` summary.
+- Docs: `PROJECT.md`, `CHROMEWEBSTORE.md`, a forward-pointer line in `docs/features/feature-2-capture-engine/spec.md`.
 
 **Not** in scope:
-- Any change to `manifest.json` beyond the `version` string bump (0.3.0 → 0.4.0, matching the prior per-feature convention) — no new permissions, no new `host_permissions`, no behavior flags (all probes are synchronous DOM/attribute reads, same as Feature 2).
-- Any change to `content/annotations.js`, `content/queue.js`, `content/picker.js`, `content/overlay.js`, `content/state.js`, or `background.js` — they all pass `component` through opaquely (verified: `annotations.js:1120`, `:764`, `:848`, `:1131`).
+- Any change to `manifest.json` beyond the `version` bump (0.3.0 → 0.4.0). `world: "MAIN"` injection needs no permission and no `web_accessible_resources` entry.
+- Any change to `content/queue.js`, `content/picker.js`, `content/overlay.js`, `content/state.js` — `component` still rides through opaquely.
 - Any new MCP tool, any write path, any resolve/reopen logic — Phase 2.
 - Reconciling the detected component against the user's chosen Issue type.
 - Design-system detection (shadcn/MUI/Chakra/Ant → named component + variant), Tailwind/utility-class intent summaries, and reading component `props`/variants — all deferred to Phase 3 / a later pass; see `spec.md`'s "Future directions." This feature is component *identity* only.
@@ -20,24 +25,27 @@ In scope:
 
 ## Architecture decision
 
-- **All work lands in `content/capture.js`.** `getComponentInfo` and its helpers (`getReactComponentName`, `getVueComponentName`, `getDataAttributeName`) are rewritten/expanded. `getSelectorPath` and `getRelevantStyles` are not touched. The `spotcheck:element-captured` event name and the `component` field name stay exactly as they are — only the object's shape grows. `spec.md`'s "Why this is enhanced in place" section is the rationale; do not create a `content/component.js` or a new event.
-- **Same file conventions as the rest of the content scripts**: no bundler, no ES modules, IIFE with the `if (spotcheck.capture) return` re-injection guard, everything hung off `window.__spotcheck`. This feature adds no new file to `CONTENT_FILES` in `background.js`.
-- **Per-framework probes are each independently `try/catch`-wrapped**, inside an overall best-effort orchestrator — a throw inside the Angular hook or `customElements.get` must not prevent the React result or the event dispatch. Matches Feature 2's "defensive per-field, not defensive overall" note.
-- **`confidence` is computed, not guessed by the caller.** Every probe returns enough for the orchestrator to label the result; a name that matches the minified-identifier heuristic is force-downgraded to `"low"` no matter its source.
+- **Detection runs in the page's MAIN world** (`content/component-probe.js`), the only place `el.__reactFiber$*` etc. are readable. It's a plain IIFE (no `window.__spotcheck` — that namespace is the isolated world's), guarded by `if (window.__spotcheckProbeInstalled) return`, and does exactly one thing: answer a `window.postMessage({ __spotcheck: "probe-request", nonce, selector })` with `{ __spotcheck: "probe-response", nonce, component }`.
+- **`capture.js` (ISOLATED) orchestrates.** On `spotcheck:element-selected` it computes selector + styles, dispatches `spotcheck:element-captured` synchronously with an **empty `component` placeholder**, then `postMessage`s the selector to the probe and, on the reply (or an 800 ms timeout), dispatches `spotcheck:element-captured` a **second time** with `component` filled. Same event, same field name — only the timing is new.
+- **`background.js` injects the probe with a second `executeScript` call** (`world: "MAIN"`), wrapped in its own `try/catch` so a page that blocks MAIN-world injection doesn't break the rest.
+- **Per-framework probes are each `try/catch`-wrapped** inside a best-effort orchestrator; a throw in one never stops the others or the `postMessage` reply.
+- **`confidence` is computed by the orchestrator**, and any `name` matching the minified-identifier heuristic is force-downgraded to `"low"`.
 
 ## Files to create / touch
 
-1. **Touch** `extension/content/capture.js` — the bulk of the feature (Steps 1–7).
-2. **Touch** `extension/content/export.js` — Step 8.
-3. **Touch** `mcp-server/mcp-tools.js` — Step 9.
-4. **Touch** `PROJECT.md`, `CHROMEWEBSTORE.md`, `docs/features/feature-2-capture-engine/spec.md` — Step 10.
-5. **Create** nothing in `extension/` — no new content script, no manifest change.
+1. **Create** `extension/content/component-probe.js` — all framework detection (Steps 1–7 land here, not in `capture.js`).
+2. **Rewrite** `extension/content/capture.js` — keep selector/styles, add the probe round-trip (Step 7b).
+3. **Touch** `extension/background.js` — MAIN-world injection (Step 7c).
+4. **Touch** `extension/content/annotations.js` — popup line + clobber guard (Step 7d).
+5. **Touch** `extension/content/export.js` — Step 8.
+6. **Touch** `mcp-server/mcp-tools.js` — Step 9.
+7. **Touch** `PROJECT.md`, `CHROMEWEBSTORE.md`, `docs/features/feature-2-capture-engine/spec.md`, `extension/manifest.json` (version only) — Step 10.
 
 ## Step-by-step
 
 ### Step 1 — Constants: noise names, minified-name heuristic, data-attribute list
 
-At the top of `capture.js`'s IIFE, alongside the existing `BASE_PROPERTIES` etc.:
+At the top of `content/component-probe.js`'s IIFE (see Step 7 for the wrapper):
 
 ```js
 // Component names that are library/tooling wrappers, never what a user means
@@ -367,15 +375,41 @@ function getComponentInfo(el) {
 }
 ```
 
-### Step 7 — `captureElement` stays the same shape
-
-`captureElement` already calls `getComponentInfo(el)` inside its own `try/catch` and assigns the result to `component` (`capture.js:168-172`, `:183`). No change needed there — the fallback default already assigned at the top of `captureElement` should be updated to the new empty shape:
+Steps 1–6 above are the body of `content/component-probe.js`. Wrap them in `(function () { if (window.__spotcheckProbeInstalled) return; window.__spotcheckProbeInstalled = true; … })()` and end with the message listener:
 
 ```js
-let component = { name: null, source: "none", confidence: "low", sourcePath: null, sourceLine: null, ancestry: [] };
+window.addEventListener("message", (ev) => {
+  if (ev.source !== window) return;
+  const d = ev.data;
+  if (!d || d.__spotcheck !== "probe-request" || typeof d.nonce !== "string") return;
+  let component = null;
+  try {
+    const el = d.selector ? document.querySelector(d.selector) : null;
+    if (el) component = getComponentInfo(el);
+  } catch (err) { component = null; }
+  try { window.postMessage({ __spotcheck: "probe-response", nonce: d.nonce, component }, "*"); } catch (err) {}
+});
 ```
 
-Leave the existing `// TODO` about best-effort framework internals; expand it to note this now covers React/Vue/Angular/Svelte/Web Components and is still dev-build-dependent for `sourcePath`.
+### Step 7b — `content/capture.js`: drop the framework logic, add the probe round-trip
+
+- Keep `getSelectorPath`, `getRelevantStyles`, the IIFE + `if (spotcheck.capture) return` guard, and `EMPTY_COMPONENT` (still needed as the placeholder).
+- `captureElement` no longer calls any `getComponentInfo` — it sets `component: Object.assign({}, EMPTY_COMPONENT)`.
+- Add the channel: a `pendingProbes` `Map<nonce, resolve>`, a `window` `message` listener for `__spotcheck === "probe-response"`, and `requestComponent(selector)` returning a `Promise` that posts `{ __spotcheck: "probe-request", nonce, selector }` and resolves `null` after `PROBE_TIMEOUT_MS` (800).
+- The `spotcheck:element-selected` handler dispatches `spotcheck:element-captured` synchronously, then `requestComponent(detail.selector).then((component) => { if (!component || !el.isConnected) return; dispatch again with Object.assign({}, detail, { element: el, component }); })`.
+
+### Step 7c — `extension/background.js`: MAIN-world injection
+
+- Add `const MAIN_WORLD_FILES = ["content/component-probe.js"];` (NOT in `CONTENT_FILES`).
+- In `inject()`, after the existing `executeScript`, a second `await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: MAIN_WORLD_FILES })` wrapped in its own `try/catch` that only `console.warn`s — the isolated injection succeeding is what `inject()` returns on.
+
+### Step 7d — `content/annotations.js`: popup component line + clobber guard
+
+- CSS: a `.popup-component` rule (hidden by default, `.visible` shows it), with `.name` (`#cecece`), `.path` (`#77cff4`), `.unverified` (muted italic). Matches the Figma dark palette already in the file.
+- Markup: a `componentEl` `<div class="popup-component">` appended right after `headerEl`; declare `let componentEl = null;` with the other popup element vars and null it in the teardown block.
+- `renderComponentLine(component)`: builds `⬡ <name> · <sourcePath>:<line>` + a ` · unverified` / ` · name unavailable` tail when `confidence === "low"`; hides the element when there's no `name` and no `sourcePath`.
+- Call it from `openPopupFor` (`activeRecord ? activeRecord.component : cached && cached.component`) and from the `spotcheck:element-captured` listener (`if (draftElement === el) renderComponentLine(...)`).
+- Clobber guard in that same listener: only overwrite the cached/record `component` when the incoming one is meaningful (`name || sourcePath || source !== "none"`) or the existing one isn't — so the synchronous placeholder can't wipe a real prior value.
 
 ### Step 8 — `export.js`: Component line
 
@@ -421,7 +455,7 @@ Leave `getAnnotation` untouched — it already returns the full record, so `conf
 ### Step 10 — Docs
 
 - **`PROJECT.md`**: add `feature-8-component-name-extraction/ { plan.md, spec.md }` to the repo-layout tree; update the status line at the bottom from "Feature 8 … queued next, not yet started" to done + "each verified with live browser testing"; update §8's "Not yet started — Component Name Extraction (Feature 8)" paragraph to a DONE entry; refine §4's Feature 2 bullet to note the modern-framework extraction now lives in Feature 8.
-- **`CHROMEWEBSTORE.md`**: add a `0.4.0` version-history entry; in "Data usage disclosure", note that captured/stored/exported component data may now include a **source file path string** read from the target app's own dev-build metadata (DOM attributes / framework dev hooks) — still local + clipboard/loopback only, no new permission, no filesystem access by the extension.
+- **`CHROMEWEBSTORE.md`**: add a `0.4.0` version-history entry; in "Data usage disclosure", note (a) the **source file path string** now captured/stored/exported, read from the target app's own dev-build metadata — still local + clipboard/loopback only, no new permission, no filesystem access; and (b) that SpotCheck now **runs one script in the page's own JS context** (`content/component-probe.js`, MAIN world) to read framework component metadata — read-only, no page data touched beyond framework hooks, no new permission.
 - **`docs/features/feature-2-capture-engine/spec.md`**: add one line under the `component` shape bullet — "Superseded by Feature 8 — see `docs/features/feature-8-component-name-extraction/spec.md` for the enriched shape (`confidence`, `sourcePath`, `sourceLine`, `ancestry`) and modern-framework coverage."
 
 ## Test criteria before calling this feature done
@@ -431,7 +465,7 @@ Run each against a real running app, not a synthetic fixture:
 - [ ] **React dev build** (CRA/Next dev/Vite React): selecting an element inside a named component returns `source: "react"`, `confidence: "high"`, a non-null `name`, an `ancestry` of length ≥ 1, and — because it's a dev build — a non-null `sourcePath` ending in a `.jsx/.tsx` file plus a `sourceLine`.
 - [ ] **A component wrapped in `React.memo` and/or `forwardRef`** (e.g. any Radix or shadcn/ui primitive): `name` is the real component, not `"ForwardRef"`, `"Memo"`, `"Slot"`, `"SlotClone"`, or `"Primitive.button"`.
 - [ ] **styled-components / emotion element**: `name` is the nearest real component above it, not `"styled.div"` / `"EmotionCssPropInternal"`.
-- [ ] **React production build** (minified): returns `source: "react"`, `confidence: "low"`, no throw, no misleading multi-word name — either `null` or a clearly-minified token, never a confident wrong answer.
+- [ ] **React production build** (minified): `source: "react"`; `confidence: "low"` and `ancestry: []` for elements whose fiber names are all mangled; `confidence: "high"` only where a real name survived minification. No throw, never a confident wrong multi-word name. (Verified against react.dev during implementation.)
 - [ ] **Vue 3 `<script setup>` app**: `source: "vue"`, `name` from the SFC filename, `sourcePath` from `__file` in dev, `ancestry` reflects the `.parent` chain.
 - [ ] **Svelte dev app**: `source: "svelte"`, `sourcePath`/`sourceLine` from `__svelte_meta`, `ancestry` is `[]`.
 - [ ] **Angular dev app**: `source: "angular"`, `name` is a clean class name, `sourcePath` is `null`.
@@ -440,8 +474,12 @@ Run each against a real running app, not a synthetic fixture:
 - [ ] **Plain static HTML, no framework**: `{ name: null, source: "none", confidence: "low", sourcePath: null, sourceLine: null, ancestry: [] }` — no thrown errors, no console errors.
 - [ ] **`react-dev-inspector` on a React app**: `sourcePath`/`sourceLine` get filled from `data-inspector-*` even though `name`/`source` came from the fiber tree (the opportunistic fill in Step 6).
 - [ ] Selecting an SVG node, a `<table>` cell, a Shadow DOM host, and a `contenteditable` all complete without throwing — the per-probe `try/catch` isolation holds.
+- [ ] **Two-world round trip**: on a React dev app, `spotcheck:element-captured` fires twice — once with an empty `component`, once (within ~a few ms) with it filled — and the popup's component line appears/updates a beat after the popup opens.
+- [ ] **Popup shows it**: the detected component + `sourcePath:line` render under the popup header; a `confidence: "low"` result shows the ` · unverified` tail; a `source: "none"` element shows no component line at all.
+- [ ] **Probe absent**: with `content/component-probe.js` removed from `MAIN_WORLD_FILES` (or on a page that blocks MAIN-world injection), everything else works and `component` stays empty — no hang, no console error beyond the swallowed warning.
+- [ ] **Page can't break it**: a page script posting a forged `{ __spotcheck: "probe-response", nonce: "x", component: {...} }` at most changes a component label; it can't reach storage or other tabs.
 - [ ] Export a queue with a detected component: the Markdown `**Component:**` line shows `name (source, confidence)` and, when present, `— path:line`, plus a `**Component tree:**` breadcrumb when `ancestry.length > 1`.
 - [ ] `list_annotations` over MCP now includes a `component: { name, source, sourcePath }` object per item; `get_annotation` still returns the full record including `confidence`, `sourceLine`, `ancestry`.
-- [ ] Network tab across all of the above: **zero** requests — every probe is a synchronous property/attribute read. Same hard guardrail as Feature 2.
-- [ ] `manifest.json`'s `permissions` and `host_permissions` are unchanged by this feature; only `version` moves (0.3.0 → 0.4.0).
-- [ ] Toggle inspection mode off and back on, re-select: still fires a correct enriched `spotcheck:element-captured` — the IIFE re-injection guard still holds.
+- [ ] Network tab across all of the above: **zero** requests — every probe is a synchronous property/attribute read.
+- [ ] `manifest.json`'s `permissions` and `host_permissions` are unchanged; only `version` moves (0.3.0 → 0.4.0). No `web_accessible_resources` added.
+- [ ] Toggle inspection mode off and back on, re-select: still fires a correct enriched `spotcheck:element-captured`. Both the isolated `if (spotcheck.capture) return` and the MAIN-world `if (window.__spotcheckProbeInstalled) return` guards hold across re-injection.
