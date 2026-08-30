@@ -35,7 +35,7 @@ flowchart TD
 Each numbered feature below has its own `plan.md` (concrete implementation steps for an AI coding agent — files, functions, order, test criteria) and `spec.md` (technical reference — what it does, how it works, feature-specific guardrails, relevance to other features), kept in a `feature-N-<name>/` folder.
 
 1. **Inspection Mode / Element Picker** — toggleable hover+click DOM picker. Hover highlights elements; click drills down to the precise child element, same interaction model as browser DevTools' element picker.
-2. **Capture Engine** — for the selected element, grabs CSS selector path, computed styles relevant to the chosen tag, and component name if detectable (React/Vue devtools hooks, data attributes, or nearest identifiable ancestor).
+2. **Capture Engine** — for the selected element, grabs CSS selector path, computed styles relevant to the chosen tag, and component name if detectable (React/Vue devtools hooks, data attributes, or nearest identifiable ancestor). *(v2's Feature 8 replaces the component-detection half of this with a modern-framework-aware extraction — source file path, confidence, ancestry — in the same file; see `docs/features/feature-8-component-name-extraction/spec.md`.)*
 3. **Annotation Layer** — popup/sidebar for a free-text note (a preset tag was originally planned here; descoped to free-text-only for v1 and revisited in v2's Feature 5 — see §8). Supports queuing multiple annotations before a single export.
 4. **Export Bundle** — serializes all queued annotations into one structured Markdown/JSON block, copies to clipboard. **v1: clipboard only** — no server, no network call, nothing running in the background.
 
@@ -74,7 +74,7 @@ Non-negotiable constraints on the implementation, not aspirations:
 
 **DONE (v2, Feature 5) — Preset annotation tags, in a different shape than originally imagined.** Feature 3's original design called for a preset tag (spacing, color, wrong token, broken interaction, other) alongside the free-text note; v1 shipped free-text notes only. v2's Feature 5 (per an actual Figma design, not a guessed category list) built a grouped single-select Issue-type dropdown — a `Property` group (Color/Typography/Spacing/Layout) and a `Structure` group (Component/Component Variant/State-Interaction/Other) — which now doubles as this. See `docs/features/feature-5-ui-makeover/spec.md`'s "Current Issue type model."
 
-**Not yet started — Component Name Extraction (Feature 8).** Queued next in the v2 build sequence (5→6→7→8); not begun as of this writing.
+**Specced, not yet built — Component Name Extraction (Feature 8).** Last in the v2 build sequence (5→6→7→8). `docs/features/feature-8-component-name-extraction/{plan,spec}.md` are written: an in-place, modern-framework-aware rewrite of Feature 2's component detection (React with `memo`/`forwardRef`/library-wrapper unwrapping, Vue 3 `<script setup>`, Svelte, Angular, Web Components, Astro islands), adding source file path + line, a confidence flag, and the full component ancestry — with design-system-aware detection (shadcn/MUI/Chakra → named component + variant) and prop/variant capture explicitly deferred to Phase 3. Code not implemented yet.
 
 **Phase 3 — Figma design QA mode.** When a Figma file exists for the product, add a mode that pulls structured Figma node/token data (via the Figma MCP server) plus screenshots, and speculatively flags likely divergences between the live-coded UI and the design spec — button padding drifted from the token, a component using the wrong color variable, etc. This is explicitly **not** full automated visual regression testing (tools like Applitools or Percy already do that well). Instead: the AI flags *candidate* issues, the user confirms which ones are real via a simple checklist UI, and only confirmed issues get sent to Claude for a fix — because not everything in a design translates cleanly to code (e.g. fixed pixel grids becoming responsive percentage layouts), so a human confirmation step avoids false-positive noise. **Known hard problem:** mapping a rendered element's computed styles back to design tokens automatically is unsolved based on prior experimentation — plan for this accordingly, not as a trivial lookup.
 
@@ -95,7 +95,8 @@ spotcheck/
 │       ├── feature-4-export-bundle/            { plan.md, spec.md }
 │       ├── feature-5-ui-makeover/              { plan.md, spec.md }
 │       ├── feature-6-annotation-capture-edit/  { plan.md, spec.md }
-│       └── feature-7-local-mcp-server/         { plan.md, spec.md }
+│       ├── feature-7-local-mcp-server/         { plan.md, spec.md }
+│       └── feature-8-component-name-extraction/ { plan.md, spec.md }  ← docs written, code not yet implemented
 ├── extension/                      ← the Chrome extension itself; this is what gets ZIPed for the Web Store
 │   ├── manifest.json
 │   ├── background.js
@@ -114,4 +115,4 @@ spotcheck/
     └── mcp-tools.js
 ```
 
-*Status: v1 (Features 1-4: Inspection Mode, Capture Engine, Annotation Layer, Export Bundle) and v2 Features 5-7 (UI Makeover, Annotation Capture & Edit, Local MCP Server) are all implemented in the code, each verified with live, real end-to-end browser testing (not just unit-level checks) as it shipped. Feature 8 (Component Name Extraction) is queued next, not yet started. Chrome Web Store submission is deliberately deferred to v3/v4, not v1/v2.*
+*Status: v1 (Features 1-4: Inspection Mode, Capture Engine, Annotation Layer, Export Bundle) and v2 Features 5-7 (UI Makeover, Annotation Capture & Edit, Local MCP Server) are all implemented in the code, each verified with live, real end-to-end browser testing (not just unit-level checks) as it shipped. Feature 8 (Component Name Extraction) has its `plan.md`/`spec.md` written but no code yet. Chrome Web Store submission is deliberately deferred to v3/v4, not v1/v2.*
