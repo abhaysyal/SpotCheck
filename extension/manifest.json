@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "SpotCheck",
+  "version": "0.3.0",
+  "description": "Click-to-select DOM annotation for AI coding agents.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "SpotCheck — toggle inspection mode"
+  }
+}
