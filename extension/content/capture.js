@@ -38,13 +38,18 @@ window.__spotcheck = window.__spotcheck || {};
   const FLEX_PROPERTIES = ["flexDirection", "justifyContent", "alignItems", "flexWrap", "gap"];
   const GRID_PROPERTIES = ["gridTemplateColumns", "gridTemplateRows", "gap"];
 
-  // Feature 8 — the shape content/component-probe.js also produces. Used as
-  // the placeholder in the first (synchronous) spotcheck:element-captured;
-  // the probe's real answer arrives in a second dispatch.
-  const EMPTY_COMPONENT = {
-    name: null, source: "none", confidence: "low",
-    sourcePath: null, sourceLine: null, ancestry: [],
-  };
+  // Feature 8 — the shape content/component-probe.js also produces (keep in
+  // sync with that file's emptyComponent()). Used as the placeholder in the
+  // first (synchronous) spotcheck:element-captured; the probe's real answer
+  // arrives in a second dispatch. A function, not a shared object constant —
+  // `ancestry` is an array, and a shared instance would let a future push()
+  // onto any one "empty" component corrupt every other one.
+  function emptyComponent() {
+    return {
+      name: null, source: "none", confidence: "low",
+      sourcePath: null, sourceLine: null, ancestry: [],
+    };
+  }
   const PROBE_TIMEOUT_MS = 800;
 
   function getSelectorPath(el) {
@@ -123,7 +128,7 @@ window.__spotcheck = window.__spotcheck || {};
       classNames: typeof el.className === "string" ? el.className.trim() || null : null,
       selector,
       styles,
-      component: Object.assign({}, EMPTY_COMPONENT), // real value arrives via the probe, see below
+      component: emptyComponent(), // real value arrives via the probe, see below
     };
   }
 
@@ -142,13 +147,17 @@ window.__spotcheck = window.__spotcheck || {};
     resolve(d.component || null);
   });
 
-  function requestComponent(selector) {
+  function requestComponent(selector, tagName) {
     if (!selector) return Promise.resolve(null);
     return new Promise((resolve) => {
       const nonce = `sc-${Date.now()}-${probeSeq++}`;
       pendingProbes.set(nonce, resolve);
       try {
-        window.postMessage({ __spotcheck: "probe-request", nonce, selector }, "*");
+        // tagName lets the probe reject a selector that, by the time it runs
+        // (up to PROBE_TIMEOUT_MS later), now resolves to a different element
+        // than the one the user clicked — e.g. an SPA re-render reordering
+        // siblings shifts what an :nth-of-type-based selector matches.
+        window.postMessage({ __spotcheck: "probe-request", nonce, selector, tagName }, "*");
       } catch (err) {
         pendingProbes.delete(nonce);
         resolve(null);
@@ -176,7 +185,7 @@ window.__spotcheck = window.__spotcheck || {};
     // Downstream (annotations.js) already re-reads spotcheck:element-captured
     // and updates both its capture cache and any existing record, so a second
     // dispatch for the same element is the intended way to deliver this late.
-    requestComponent(detail.selector).then((component) => {
+    requestComponent(detail.selector, detail.tagName).then((component) => {
       if (!component || !el.isConnected) return;
       document.dispatchEvent(
         new CustomEvent("spotcheck:element-captured", {

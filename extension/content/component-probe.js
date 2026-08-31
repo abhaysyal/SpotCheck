@@ -48,10 +48,16 @@
   const ANCESTRY_CAP = 8;
   const PROJECT_ROOT_SEGMENTS = ["src/", "app/", "pages/", "components/", "lib/"];
 
-  const EMPTY_COMPONENT = {
-    name: null, source: "none", confidence: "low",
-    sourcePath: null, sourceLine: null, ancestry: [],
-  };
+  // A function, not a shared object constant — `ancestry` is an array, and a
+  // shared instance handed out via a shallow Object.assign clone would let a
+  // future push() onto any one "empty" component corrupt every other one.
+  // Keep this in sync with capture.js's identically-shaped placeholder.
+  function emptyComponent() {
+    return {
+      name: null, source: "none", confidence: "low",
+      sourcePath: null, sourceLine: null, ancestry: [],
+    };
+  }
 
   // --- name classification + path helpers -------------------------------
 
@@ -67,11 +73,23 @@
 
   // Trim a build-machine absolute path to start at the last recognizable
   // project-root segment. Pure string work — never reads/opens the path.
+  // A match only counts at a real path boundary (start of string, or
+  // preceded by a slash) — otherwise a folder that merely ends in one of
+  // these segments (e.g. "my-app/", "webapp/") would falsely match "app/"
+  // mid-name and truncate the path at the wrong point.
   function normalizeSourcePath(fileName) {
     if (!fileName || typeof fileName !== "string") return null;
     for (const seg of PROJECT_ROOT_SEGMENTS) {
-      const idx = fileName.lastIndexOf(seg);
-      if (idx > -1) return fileName.slice(idx);
+      let searchFrom = fileName.length;
+      while (true) {
+        const idx = fileName.lastIndexOf(seg, searchFrom - 1);
+        if (idx === -1) break;
+        const boundaryChar = fileName[idx - 1];
+        if (idx === 0 || boundaryChar === "/" || boundaryChar === "\\") {
+          return fileName.slice(idx);
+        }
+        searchFrom = idx;
+      }
     }
     return fileName;
   }
@@ -342,10 +360,25 @@
     ];
 
     let result = null;
+    // getReactComponent's "React is on this page but this node has no fiber"
+    // result (name: null, source: "react") is the weakest possible signal —
+    // it must not short-circuit the chain ahead of a real hit from a later
+    // probe (e.g. a web component or a data-testid on a React page). Hold it
+    // aside and only fall back to it if nothing better turns up.
+    let reactPresentFallback = null;
     for (const probe of probes) {
       try {
         const hit = probe(el);
-        if (hit && (hit.name || hit.source !== "none")) {
+        if (!hit) continue;
+        if (hit.name) {
+          result = hit;
+          break;
+        }
+        if (probe === getReactComponent && hit.source === "react") {
+          if (!reactPresentFallback) reactPresentFallback = hit;
+          continue;
+        }
+        if (hit.source !== "none") {
           result = hit;
           break;
         }
@@ -353,7 +386,8 @@
         console.warn("SpotCheck: component probe " + probe.name + " failed", err);
       }
     }
-    if (!result) return Object.assign({}, EMPTY_COMPONENT);
+    if (!result) result = reactPresentFallback;
+    if (!result) return emptyComponent();
 
     // Opportunistically fill a missing source path from dev-inspector / Astro
     // attributes even when the name came from a framework instance tree
@@ -385,7 +419,13 @@
     let component = null;
     try {
       const el = d.selector ? document.querySelector(d.selector) : null;
-      if (el) component = getComponentInfo(el);
+      // Guard against the DOM having reflowed between capture and this
+      // message: an :nth-of-type-based selector can silently start matching
+      // a different element (e.g. a sibling re-render reordered the tree).
+      // A tagName mismatch means the resolved node isn't the one the user
+      // selected — report nothing rather than a wrong component.
+      const matches = el && (!d.tagName || el.tagName.toLowerCase() === d.tagName);
+      if (matches) component = getComponentInfo(el);
     } catch (err) {
       component = null;
     }

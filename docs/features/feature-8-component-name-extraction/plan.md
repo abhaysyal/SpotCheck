@@ -64,7 +64,8 @@ const NOISE_COMPONENT_PATTERNS = [
 ];
 
 // A name that looks like a minifier output rather than a real identifier.
-const MINIFIED_NAME_RE = /^[$_a-z]{1,2}$|[a-f0-9]{6,}$/;
+// Any case (minifiers produce `B`, `tR`, `n5`, etc., not just lowercase).
+const MINIFIED_NAME_RE = /^[$_A-Za-z][$_A-Za-z0-9]?$|[a-f0-9]{6,}$/;
 
 const DATA_ATTRIBUTES = [
   "data-testid", "data-component", "data-component-name", "data-cy", "data-slot",
@@ -95,15 +96,22 @@ function looksMinified(name) {
 // project-root segment. Read-only string work — no fs access.
 function normalizeSourcePath(fileName) {
   if (!fileName || typeof fileName !== "string") return null;
-  let best = fileName;
   for (const seg of PROJECT_ROOT_SEGMENTS) {
-    const idx = fileName.lastIndexOf(seg);
-    if (idx > -1 && (best === fileName || idx < best.length)) {
-      best = fileName.slice(idx);
-      break;
+    // A match only counts at a real path boundary (start of string, or
+    // preceded by a slash) — otherwise a folder that merely ends in one of
+    // these segments (e.g. "my-app/") would falsely match "app/" mid-name.
+    let searchFrom = fileName.length;
+    while (true) {
+      const idx = fileName.lastIndexOf(seg, searchFrom - 1);
+      if (idx === -1) break;
+      const boundaryChar = fileName[idx - 1];
+      if (idx === 0 || boundaryChar === "/" || boundaryChar === "\\") {
+        return fileName.slice(idx);
+      }
+      searchFrom = idx;
     }
   }
-  return best;
+  return fileName;
 }
 
 function basenameComponent(fileName) {
@@ -336,10 +344,15 @@ function getDataAttributeName(el) {
 ### Step 6 — Orchestrator
 
 ```js
-const EMPTY_COMPONENT = {
-  name: null, source: "none", confidence: "low",
-  sourcePath: null, sourceLine: null, ancestry: [],
-};
+// A function, not a shared object constant — `ancestry` is an array, and a
+// shared instance would let a future push() onto any one "empty" component
+// corrupt every other one.
+function emptyComponent() {
+  return {
+    name: null, source: "none", confidence: "low",
+    sourcePath: null, sourceLine: null, ancestry: [],
+  };
+}
 
 function getComponentInfo(el) {
   const probes = [
@@ -347,16 +360,27 @@ function getComponentInfo(el) {
     getSvelteComponent, getWebComponent, getSourceFromAttributes, getDataAttributeName,
   ];
 
+  // getReactComponent's "React is on this page but this node has no fiber"
+  // result is the weakest possible signal — hold it aside and only fall
+  // back to it if no later probe finds something better.
   let result = null;
+  let reactPresentFallback = null;
   for (const probe of probes) {
     try {
       const hit = probe(el);
-      if (hit && (hit.name || hit.source !== "none")) { result = hit; break; }
+      if (!hit) continue;
+      if (hit.name) { result = hit; break; }
+      if (probe === getReactComponent && hit.source === "react") {
+        if (!reactPresentFallback) reactPresentFallback = hit;
+        continue;
+      }
+      if (hit.source !== "none") { result = hit; break; }
     } catch (err) {
       console.warn(`SpotCheck: component probe ${probe.name} failed`, err);
     }
   }
-  if (!result) return { ...EMPTY_COMPONENT };
+  if (!result) result = reactPresentFallback;
+  if (!result) return emptyComponent();
 
   // Opportunistically fill a missing source path from dev-inspector / Astro
   // attributes even when the name came from a framework instance tree.
@@ -385,7 +409,12 @@ window.addEventListener("message", (ev) => {
   let component = null;
   try {
     const el = d.selector ? document.querySelector(d.selector) : null;
-    if (el) component = getComponentInfo(el);
+    // Guard against the DOM having reflowed between capture and this message:
+    // an :nth-of-type-based selector can silently start matching a different
+    // element (e.g. a sibling re-render reordered the tree). A tagName
+    // mismatch means the resolved node isn't the one the user selected.
+    const matches = el && (!d.tagName || el.tagName.toLowerCase() === d.tagName);
+    if (matches) component = getComponentInfo(el);
   } catch (err) { component = null; }
   try { window.postMessage({ __spotcheck: "probe-response", nonce: d.nonce, component }, "*"); } catch (err) {}
 });
@@ -393,10 +422,10 @@ window.addEventListener("message", (ev) => {
 
 ### Step 7b — `content/capture.js`: drop the framework logic, add the probe round-trip
 
-- Keep `getSelectorPath`, `getRelevantStyles`, the IIFE + `if (spotcheck.capture) return` guard, and `EMPTY_COMPONENT` (still needed as the placeholder).
-- `captureElement` no longer calls any `getComponentInfo` — it sets `component: Object.assign({}, EMPTY_COMPONENT)`.
-- Add the channel: a `pendingProbes` `Map<nonce, resolve>`, a `window` `message` listener for `__spotcheck === "probe-response"`, and `requestComponent(selector)` returning a `Promise` that posts `{ __spotcheck: "probe-request", nonce, selector }` and resolves `null` after `PROBE_TIMEOUT_MS` (800).
-- The `spotcheck:element-selected` handler dispatches `spotcheck:element-captured` synchronously, then `requestComponent(detail.selector).then((component) => { if (!component || !el.isConnected) return; dispatch again with Object.assign({}, detail, { element: el, component }); })`.
+- Keep `getSelectorPath`, `getRelevantStyles`, the IIFE + `if (spotcheck.capture) return` guard, and `emptyComponent()` (still needed as the placeholder factory — kept in sync with component-probe.js's identically-shaped one so a shared object instance can't have its `ancestry` array corrupted by a future mutation).
+- `captureElement` no longer calls any `getComponentInfo` — it sets `component: emptyComponent()`.
+- Add the channel: a `pendingProbes` `Map<nonce, resolve>`, a `window` `message` listener for `__spotcheck === "probe-response"`, and `requestComponent(selector, tagName)` returning a `Promise` that posts `{ __spotcheck: "probe-request", nonce, selector, tagName }` and resolves `null` after `PROBE_TIMEOUT_MS` (800). `tagName` lets the probe reject a selector that, by the time it runs, now resolves to a different element than the one the user clicked.
+- The `spotcheck:element-selected` handler dispatches `spotcheck:element-captured` synchronously, then `requestComponent(detail.selector, detail.tagName).then((component) => { if (!component || !el.isConnected) return; dispatch again with Object.assign({}, detail, { element: el, component }); })`.
 
 ### Step 7c — `extension/background.js`: MAIN-world injection
 

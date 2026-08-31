@@ -34,22 +34,27 @@ function updateBadge(tabId, isActive) {
 // (chrome://, the Web Store, etc). A fresh injection always starts active.
 async function inject(tabId) {
   try {
-    await chrome.scripting.executeScript({
+    // The two injections target different worlds and don't depend on each
+    // other, so start them together rather than waiting on the isolated one
+    // before even asking Chrome to start the MAIN-world one.
+    const isolatedInjection = chrome.scripting.executeScript({
       target: { tabId },
       files: CONTENT_FILES,
     });
     // Best-effort — the extension works without the component probe (the
     // component field just stays empty). A page that blocks MAIN-world
     // injection must not break the rest of the injection above.
-    try {
-      await chrome.scripting.executeScript({
+    const probeInjection = chrome.scripting
+      .executeScript({
         target: { tabId },
         world: "MAIN",
         files: MAIN_WORLD_FILES,
+      })
+      .catch((probeErr) => {
+        console.warn("SpotCheck: component probe injection failed (non-fatal).", probeErr);
       });
-    } catch (probeErr) {
-      console.warn("SpotCheck: component probe injection failed (non-fatal).", probeErr);
-    }
+    await isolatedInjection;
+    await probeInjection;
     return true;
   } catch (err) {
     console.warn("SpotCheck: could not inject into this tab.", err);
