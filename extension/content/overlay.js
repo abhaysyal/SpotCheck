@@ -22,6 +22,14 @@ window.__spotcheck = window.__spotcheck || {};
   let lastMode = null;
   let rafId = null;
 
+  // Feature 9 — the component name for lastTarget, or null when we don't
+  // know one (no framework, probe not installed, answer not back yet). Kept
+  // as plain text next to the box rather than a second overlay of its own:
+  // it has to move with the box every frame anyway, so it belongs to the
+  // same shadow root and the same applyPosition pass.
+  let labelEl = null;
+  let labelText = null;
+
   function ensureHost() {
     if (hostEl) return;
 
@@ -50,6 +58,25 @@ window.__spotcheck = window.__spotcheck || {};
       }
       .box.hover { border-color: #3b82f6; background: rgba(59, 130, 246, 0.08); }
       .box.locked { border-color: #22c55e; background: rgba(34, 197, 94, 0.08); }
+
+      /* Feature 9 — component name badge, colour-matched to the box it
+         belongs to so hover vs locked stays readable at a glance. */
+      .label {
+        position: fixed;
+        box-sizing: border-box;
+        display: none;
+        max-width: 60vw;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: #3b82f6;
+        color: #ffffff;
+        font: 500 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        pointer-events: none;
+      }
+      .label.locked { background: #22c55e; }
     `;
     // No CSS transition on .box: an eased position change looks fine when
     // hopping between two different elements on a click/hover, but would
@@ -62,12 +89,17 @@ window.__spotcheck = window.__spotcheck || {};
     boxEl.className = "box";
     shadowRoot.appendChild(boxEl);
 
+    labelEl = document.createElement("div");
+    labelEl.className = "label";
+    shadowRoot.appendChild(labelEl);
+
     startTracking();
   }
 
   function applyPosition() {
     if (!lastTarget || !boxEl) return;
     if (!document.body.contains(lastTarget)) {
+      if (labelEl) labelEl.style.display = "none";
       // The hovered/locked element was removed from the page (e.g. a SPA
       // re-render) while still tracked — getBoundingClientRect() on a
       // detached node returns an all-zero rect, which would otherwise pin a
@@ -82,6 +114,32 @@ window.__spotcheck = window.__spotcheck || {};
     boxEl.style.left = `${rect.left}px`;
     boxEl.style.width = `${rect.width}px`;
     boxEl.style.height = `${rect.height}px`;
+    positionLabel(rect);
+  }
+
+  // Sits just above the box's top-left corner, the way the devtools
+  // inspectors place theirs — and flips to just below that edge when the
+  // element is hard against the top of the viewport and there's no room.
+  function positionLabel(rect) {
+    if (!labelEl || !labelText) return;
+    const height = labelEl.offsetHeight || 18;
+    const above = rect.top - height - 4;
+    labelEl.style.top = `${above >= 0 ? above : Math.max(rect.top + 4, 0)}px`;
+    labelEl.style.left = `${Math.max(rect.left, 0)}px`;
+  }
+
+  function renderLabel() {
+    if (!labelEl) return;
+    if (!labelText) {
+      labelEl.style.display = "none";
+      return;
+    }
+    labelEl.textContent = labelText;
+    labelEl.className = `label ${lastMode === "locked" ? "locked" : "hover"}`;
+    labelEl.style.display = "block";
+    if (lastTarget && document.body.contains(lastTarget)) {
+      positionLabel(lastTarget.getBoundingClientRect());
+    }
   }
 
   function trackingLoop() {
@@ -104,17 +162,53 @@ window.__spotcheck = window.__spotcheck || {};
     if (!el) return;
     ensureHost();
 
+    // Only a *change* of target invalidates the label. Clicking to lock
+    // re-highlights the same element in a different mode, and dropping the
+    // name there would make it flicker off at the exact moment the user
+    // commits to that element.
+    if (el !== lastTarget) labelText = null;
+
     lastTarget = el;
     lastMode = mode;
     applyPosition();
     boxEl.style.display = "block";
     boxEl.className = `box ${mode === "locked" ? "locked" : "hover"}`;
+    renderLabel();
   }
 
   function hideHighlight() {
     if (boxEl) boxEl.style.display = "none";
+    if (labelEl) labelEl.style.display = "none";
     lastTarget = null;
+    labelText = null;
   }
+
+  // Feature 9 — capture.js answers a hover with the MAIN-world probe's
+  // component descriptor; the click path's spotcheck:element-captured
+  // carries the same shape, so the locked element gets labelled too even if
+  // the pointer never rested on it long enough for the hover probe to run.
+  // Both are ignored unless they describe the element currently highlighted
+  // — a late reply for an element the pointer has left is stale, not new
+  // information. A nameless component never clears an existing label: the
+  // click path deliberately dispatches an empty placeholder first and fills
+  // it in a beat later (see capture.js), and that placeholder must not wipe
+  // a name hover already resolved.
+  function applyComponentLabel(el, component) {
+    if (!el || el !== lastTarget) return;
+    if (!component || !component.name) return;
+    labelText = component.name;
+    renderLabel();
+  }
+
+  document.addEventListener("spotcheck:hover-component", (e) => {
+    if (!e.detail) return;
+    applyComponentLabel(e.detail.element, e.detail.component);
+  });
+
+  document.addEventListener("spotcheck:element-captured", (e) => {
+    if (!e.detail) return;
+    applyComponentLabel(e.detail.element, e.detail.component);
+  });
 
   function teardown() {
     stopTracking();
@@ -122,6 +216,8 @@ window.__spotcheck = window.__spotcheck || {};
     hostEl = null;
     shadowRoot = null;
     boxEl = null;
+    labelEl = null;
+    labelText = null;
     lastTarget = null;
     lastMode = null;
     spotcheck.state.shadowRoot = null;

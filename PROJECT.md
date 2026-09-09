@@ -76,6 +76,8 @@ Non-negotiable constraints on the implementation, not aspirations:
 
 **DONE (v2, Feature 8) — Component Name Extraction.** Last in the v2 build sequence (5→6→7→8). Modern-framework-aware component detection (React with `memo`/`forwardRef`/library-wrapper unwrapping, Vue 2/3 `<script setup>`, Svelte, Angular, Web Components, Astro islands), adding a source file path + line, a `confidence` flag, and the full component ancestry to the captured `component` object — shown in the annotation popup, and threaded through `export.js`'s Markdown and Feature 7's `list_annotations` summary. Building it surfaced that Feature 2's detection never worked: content scripts run in Chrome's isolated world where framework internals are invisible, so detection moved to a new read-only MAIN-world script (`content/component-probe.js`) that `capture.js` talks to over `postMessage`. Design-system-aware detection (shadcn/MUI/Chakra → named component + variant), Tailwind utility-class intent, and prop/variant capture are explicitly deferred to Phase 3 — see the feature's `spec.md` "Future directions."
 
+**DONE (v2, Feature 9) — Hover Component Labels.** Feature 8 detected the component but only ever ran the probe on *click*, so the user had to commit to an element before finding out what it was — backwards for the picking task itself. Feature 9 surfaces the same detection on the hover highlight as a small name badge, the way the React/Vue devtools inspectors do. No new detection logic and no new permission: `picker.js` announces a hover change, `capture.js` debounces it and reuses Feature 8's existing MAIN-world probe channel (resolving the element from the pointer coordinates rather than a selector), and `overlay.js` draws the badge in the Shadow DOM root it already owns. Verified live against React 18 and Vue 3 dev builds through the real extension in a real browser — including the `memo`/`forwardRef` and `styled.div` unwrapping cases Feature 8 had specified but never actually tested. See `docs/features/feature-9-hover-component-labels/spec.md`.
+
 **Phase 3 — Figma design QA mode.** When a Figma file exists for the product, add a mode that pulls structured Figma node/token data (via the Figma MCP server) plus screenshots, and speculatively flags likely divergences between the live-coded UI and the design spec — button padding drifted from the token, a component using the wrong color variable, etc. This is explicitly **not** full automated visual regression testing (tools like Applitools or Percy already do that well). Instead: the AI flags *candidate* issues, the user confirms which ones are real via a simple checklist UI, and only confirmed issues get sent to Claude for a fix — because not everything in a design translates cleanly to code (e.g. fixed pixel grids becoming responsive percentage layouts), so a human confirmation step avoids false-positive noise. **Known hard problem:** mapping a rendered element's computed styles back to design tokens automatically is unsolved based on prior experimentation — plan for this accordingly, not as a trivial lookup.
 
 ---
@@ -96,13 +98,14 @@ spotcheck/
 │       ├── feature-5-ui-makeover/              { plan.md, spec.md }
 │       ├── feature-6-annotation-capture-edit/  { plan.md, spec.md }
 │       ├── feature-7-local-mcp-server/         { plan.md, spec.md }
-│       └── feature-8-component-name-extraction/ { plan.md, spec.md }
+│       ├── feature-8-component-name-extraction/ { plan.md, spec.md }
+│       └── feature-9-hover-component-labels/   { plan.md, spec.md }
 ├── extension/                      ← the Chrome extension itself; this is what gets ZIPed for the Web Store
 │   ├── manifest.json
 │   ├── background.js
 │   └── content/
 │       ├── state.js
-│       ├── overlay.js
+│       ├── overlay.js              ← Feature 9: also draws the hover component-name badge
 │       ├── picker.js
 │       ├── capture.js
 │       ├── component-probe.js      ← Feature 8: runs in the page's MAIN world (framework component detection)
@@ -116,4 +119,4 @@ spotcheck/
     └── mcp-tools.js
 ```
 
-*Status: v1 (Features 1-4: Inspection Mode, Capture Engine, Annotation Layer, Export Bundle) and v2 Features 5-8 (UI Makeover, Annotation Capture & Edit, Local MCP Server, Component Name Extraction) are all implemented in the code. Features 1-7 were each verified with live, real end-to-end browser testing (not just unit-level checks) as they shipped; Feature 8's live cross-framework verification against real dev builds (see its `plan.md` test criteria) is still outstanding. Chrome Web Store submission is deliberately deferred to v3/v4, not v1/v2.*
+*Status: v1 (Features 1-4: Inspection Mode, Capture Engine, Annotation Layer, Export Bundle) and v2 Features 5-9 (UI Makeover, Annotation Capture & Edit, Local MCP Server, Component Name Extraction, Hover Component Labels) are all implemented in the code. Features 1-7 were each verified with live, real end-to-end browser testing (not just unit-level checks) as they shipped. Feature 8's previously-outstanding live verification was done as part of Feature 9, against real React 18 and Vue 3 dev builds driven through the loaded extension in a real browser — `memo`/`forwardRef` unwrapping, `styled.*` noise filtering, source path + line, ancestry, the two-world round trip, and the component reaching both the popup and the Markdown export all confirmed. Still unverified live: Angular, Svelte, Web Component and Astro apps (Feature 8's detection for those is written but untested against real builds), and a React production build. Chrome Web Store submission is deliberately deferred to v3/v4, not v1/v2.*

@@ -411,6 +411,24 @@
 
   // --- message channel (isolated world <-> here) ---------------------
 
+  // Two ways to name the element to probe, because the two callers know it
+  // differently:
+  //  - `selector` — the click path. capture.js has already computed a full
+  //    selector path for the locked element, so it costs nothing to reuse.
+  //  - `point` — the hover path (Feature 9). Recomputing a selector path on
+  //    every hovered element just to hand it back for a querySelector round
+  //    trip is pure waste; the pointer coordinates picker.js already has
+  //    resolve to the same node via the same elementFromPoint call the picker
+  //    itself uses. Coordinates are viewport-relative (clientX/clientY) and
+  //    both worlds share one DOM and one viewport, so they resolve here to
+  //    exactly what the user is hovering.
+  function resolveTarget(d) {
+    if (d.point && typeof d.point.x === "number" && typeof d.point.y === "number") {
+      return document.elementFromPoint(d.point.x, d.point.y);
+    }
+    return d.selector ? document.querySelector(d.selector) : null;
+  }
+
   window.addEventListener("message", (ev) => {
     if (ev.source !== window) return;
     const d = ev.data;
@@ -418,12 +436,14 @@
 
     let component = null;
     try {
-      const el = d.selector ? document.querySelector(d.selector) : null;
+      const el = resolveTarget(d);
       // Guard against the DOM having reflowed between capture and this
       // message: an :nth-of-type-based selector can silently start matching
-      // a different element (e.g. a sibling re-render reordered the tree).
-      // A tagName mismatch means the resolved node isn't the one the user
-      // selected — report nothing rather than a wrong component.
+      // a different element (e.g. a sibling re-render reordered the tree),
+      // and on the hover path the page can equally have moved something out
+      // from under a still pointer. A tagName mismatch means the resolved
+      // node isn't the one the user selected/hovered — report nothing rather
+      // than a wrong component.
       const matches = el && (!d.tagName || el.tagName.toLowerCase() === d.tagName);
       if (matches) component = getComponentInfo(el);
     } catch (err) {

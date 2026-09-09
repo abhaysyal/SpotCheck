@@ -116,6 +116,10 @@ Detection runs inside `content/component-probe.js` in the page's MAIN world (see
 4. If nothing produced a name and no framework was even detected → `{ name: null, source: "none", confidence: "low", sourcePath: null, sourceLine: null, ancestry: [] }`.
 5. Each framework probe is in its own `try/catch` — an exotic custom element throwing inside `customElements.get`, or an Angular dev hook throwing, must not stop the other probes or the probe's `postMessage` response.
 
+### Hover display — superseded by Feature 9
+
+This feature only ever ran the probe on `spotcheck:element-selected`, so the detected component was invisible until the user clicked. **Feature 9 (`docs/features/feature-9-hover-component-labels/spec.md`) adds the hover surface**: a name badge on the highlight box, fed by this exact probe and this exact descriptor via a second trigger and a `point`-based probe request. No detection logic changed — anything that improves the probes below improves the hover badge for free.
+
 ### Popup display (`content/annotations.js`)
 
 - The popup gains a **component line under the header** (`.popup-component`), styled to the same Figma dark palette: `⬡ SubmitButton · src/checkout/SubmitButton.tsx:24`, with the name in `#cecece`, the path in the `#77cff4` accent, and a ` · unverified` / ` · name unavailable` tail in muted italic when `confidence === "low"`. Hidden entirely (`display: none`) when there's no `name` and no `sourcePath`.

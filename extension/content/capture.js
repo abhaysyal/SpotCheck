@@ -51,6 +51,16 @@ window.__spotcheck = window.__spotcheck || {};
     };
   }
   const PROBE_TIMEOUT_MS = 800;
+  // Feature 9 — the hover path gets its own, tighter budget: a hover label
+  // that lands a full second late is worse than no label, because by then
+  // the pointer has moved on and it would be describing the wrong element.
+  const HOVER_PROBE_TIMEOUT_MS = 300;
+  // Wait for the pointer to settle before probing. Sweeping the mouse across
+  // a page crosses dozens of elements, and picker.js fires an event for each
+  // one — without this, every one of them costs a postMessage round trip and
+  // a fiber-tree walk for a label nobody sees. 60ms is below the threshold
+  // where the label reads as laggy, and collapses a sweep to a single probe.
+  const HOVER_DEBOUNCE_MS = 60;
 
   function getSelectorPath(el) {
     // elementFromPoint can legitimately return <html> itself (e.g. clicking
@@ -147,17 +157,25 @@ window.__spotcheck = window.__spotcheck || {};
     resolve(d.component || null);
   });
 
-  function requestComponent(selector, tagName) {
-    if (!selector) return Promise.resolve(null);
+  // `target` names the element to probe in one of two ways — { selector,
+  // tagName } for the click path, { point: { x, y }, tagName } for the hover
+  // path — and is forwarded to the probe as-is. See component-probe.js's
+  // resolveTarget for why the hover path passes coordinates instead.
+  function requestComponent(target, timeoutMs) {
+    if (!target || (!target.selector && !target.point)) return Promise.resolve(null);
     return new Promise((resolve) => {
       const nonce = `sc-${Date.now()}-${probeSeq++}`;
       pendingProbes.set(nonce, resolve);
       try {
-        // tagName lets the probe reject a selector that, by the time it runs
-        // (up to PROBE_TIMEOUT_MS later), now resolves to a different element
-        // than the one the user clicked — e.g. an SPA re-render reordering
-        // siblings shifts what an :nth-of-type-based selector matches.
-        window.postMessage({ __spotcheck: "probe-request", nonce, selector, tagName }, "*");
+        // tagName lets the probe reject a target that, by the time it runs
+        // (up to timeoutMs later), now resolves to a different element than
+        // the one the user clicked/hovered — e.g. an SPA re-render reordering
+        // siblings shifts what an :nth-of-type-based selector matches, or
+        // moves a different node under a stationary pointer.
+        window.postMessage(
+          Object.assign({ __spotcheck: "probe-request", nonce }, target),
+          "*"
+        );
       } catch (err) {
         pendingProbes.delete(nonce);
         resolve(null);
@@ -170,7 +188,7 @@ window.__spotcheck = window.__spotcheck || {};
           pendingProbes.delete(nonce);
           resolve(null);
         }
-      }, PROBE_TIMEOUT_MS);
+      }, timeoutMs || PROBE_TIMEOUT_MS);
     });
   }
 
@@ -185,7 +203,10 @@ window.__spotcheck = window.__spotcheck || {};
     // Downstream (annotations.js) already re-reads spotcheck:element-captured
     // and updates both its capture cache and any existing record, so a second
     // dispatch for the same element is the intended way to deliver this late.
-    requestComponent(detail.selector, detail.tagName).then((component) => {
+    requestComponent(
+      { selector: detail.selector, tagName: detail.tagName },
+      PROBE_TIMEOUT_MS
+    ).then((component) => {
       if (!component || !el.isConnected) return;
       document.dispatchEvent(
         new CustomEvent("spotcheck:element-captured", {
@@ -193,6 +214,43 @@ window.__spotcheck = window.__spotcheck || {};
         })
       );
     });
+  });
+
+  // --- Feature 9: hover -> component name ------------------------------
+  //
+  // Same probe, same descriptor, different trigger and a much tighter
+  // budget. Nothing is captured or stored here — the answer goes straight
+  // back out as spotcheck:hover-component for overlay.js to label the
+  // highlight box with, mirroring what the React/Vue devtools inspectors
+  // show while you point at the page.
+
+  let hoverTimer = null;
+  // Monotonic counter, not a timer id: probe replies can arrive out of order
+  // (a deep tree takes longer to walk than a shallow one), so a slow answer
+  // for an element the pointer has already left must not overwrite the
+  // faster answer for the one it's on now. Only the newest request wins.
+  let hoverSeq = 0;
+
+  document.addEventListener("spotcheck:element-hovered", (e) => {
+    const detail = e.detail;
+    const el = detail && detail.element;
+    if (!el) return;
+
+    if (hoverTimer) clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => {
+      hoverTimer = null;
+      const seq = ++hoverSeq;
+      requestComponent(
+        { point: { x: detail.x, y: detail.y }, tagName: el.tagName.toLowerCase() },
+        HOVER_PROBE_TIMEOUT_MS
+      ).then((component) => {
+        if (seq !== hoverSeq) return; // superseded by a newer hover
+        if (!component || !component.name || !el.isConnected) return;
+        document.dispatchEvent(
+          new CustomEvent("spotcheck:hover-component", { detail: { element: el, component } })
+        );
+      });
+    }, HOVER_DEBOUNCE_MS);
   });
 
   spotcheck.capture = { captureElement };
