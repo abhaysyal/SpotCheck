@@ -188,6 +188,7 @@ app.listen(PORT, "127.0.0.1", () => {
 ```
 
 - `SPOTCHECK_EXTENSION_ORIGIN` is read from an env var rather than hardcoded, since an unpacked extension's id is derived from its filesystem path (differs per machine/checkout) while a Chrome-Web-Store-published one has a fixed id — the real id (`chrome-extension://<id>`) is visible on `chrome://extensions` with Developer mode on. The server refuses to start without it, on purpose.
+  > **Revised after shipping.** The env var is now **optional**: unset, `/sync` accepts any `chrome-extension://` origin (still rejecting every web page, which is the threat that matters), so the server runs with zero setup. Setting it still pins one extension exactly. The same pass also tightened `/mcp` to reject *every* browser `Origin`, not just `http(s)` — nothing in the extension calls `/mcp`, and the looser rule had left the queue readable by any other installed extension. See `spec.md`'s "Origin pinning" section.
 - `express` needs adding as a direct dependency in `package.json` (it's already pulled in transitively by the SDK itself, since `express.js` imports it, but declare it explicitly since this file imports it too).
 
 ### Step 5 — `extension/background.js`: push on change
@@ -218,7 +219,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 ## Test criteria before calling this feature done
 
 - [ ] With the server not running at all, every existing extension behavior (annotate, hot-save, export, delete) works exactly as before — confirm no error surfaces anywhere in the page or extension console beyond the expected, swallowed `fetch` rejection.
-- [ ] Start the server (`node mcp-server/server.js` with `SPOTCHECK_EXTENSION_ORIGIN` set to the actual loaded-unpacked extension's real `chrome-extension://<id>` origin). Create an annotation in the browser — confirm `~/.spotcheck/annotations.json` updates within roughly a second.
+- [x] Start the server (`npm start` in `mcp-server/` — no env var needed as of the revision above; set `SPOTCHECK_EXTENSION_ORIGIN` only to pin one extension). Create an annotation in the browser — confirm `~/.spotcheck/annotations.json` updates within roughly a second. *Verified live against an unconfigured server: the extension's push carries `Origin: chrome-extension://<id>` and the server logged `/sync accepted`.*
 - [ ] Edit an existing annotation (hot-save) — confirm the on-disk file updates again, reflecting the edit, without creating a duplicate entry.
 - [ ] Delete an annotation — confirm it disappears from the on-disk file too.
 - [ ] From a terminal (or `claude mcp add --transport http spotcheck http://127.0.0.1:8934/mcp` + asking Claude Code directly), call `list_annotations` — confirm it returns lightweight summaries only (no `snapshot`/`tagScopedStyles` fields present).

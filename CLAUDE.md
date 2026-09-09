@@ -33,6 +33,8 @@ Features communicate via `CustomEvent`s dispatched on `document`, not direct fun
 
 No bundler, no ES modules in content scripts (MV3 `executeScript`-injected classic scripts share one isolated-world scope). Shared state lives on a single namespaced global, `window.__spotcheck`, not via `import`/`export`.
 
+**One exception: `content/component-probe.js` (Feature 8) runs in the page's MAIN world**, injected by a separate `executeScript({ world: "MAIN" })` call in `background.js`. It does *not* share the `window.__spotcheck` scope (that's the isolated world's) and talks to `capture.js` only via `window.postMessage`. It exists because framework internals (`el.__reactFiber$*`, `window.__REACT_DEVTOOLS_GLOBAL_HOOK__`, …) are invisible from the isolated world. Keep it minimal and read-only — it's the only SpotCheck code in the page's own context. Don't add more MAIN-world code without the same scrutiny; see `docs/features/feature-8-component-name-extraction/spec.md`.
+
 ## Chrome Web Store submission tracking
 
 Whenever you create or change anything in `extension/` — especially `manifest.json`'s `permissions`/`host_permissions`, or anything about what data the extension reads, stores, or transmits — update `CHROMEWEBSTORE.md` at the repo root to match. It tracks the Developer Dashboard submission info: single purpose statement, a justification per permission, data usage disclosure, and remote-code disclosure. Keep it accurate as the extension evolves, not just written once — a stale permission justification is worse than none, since it actively misleads whoever copies it into the Dashboard at submission time.
