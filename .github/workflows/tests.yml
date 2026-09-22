@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only: nothing here comments, pushes or publishes.
+permissions:
+  contents: read
+
+# A new push to the same branch supersedes an in-flight run.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node's built-in test runner and --env-file-if-exists (used by
+          # mcp-server's start script) both need a recent Node; 22 is what
+          # the suite is developed against.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
+
+      # Two separate packages on purpose: the root one holds dev tooling
+      # (jsdom, the test runner entry point), mcp-server holds the companion
+      # server's own runtime deps. The extension itself has neither — it
+      # ships no dependencies and has no build step.
+      - name: Install dev tooling
+        run: npm ci
+
+      - name: Install mcp-server dependencies
+        run: npm ci --prefix mcp-server
+
+      # The content scripts are classic scripts with no bundler, so nothing
+      # ever parses them before Chrome does at injection time. A syntax error
+      # would otherwise only surface as a silently dead extension on a real
+      # page — cheap to catch here instead.
+      - name: Syntax-check the extension
+        run: |
+          for file in extension/background.js extension/content/*.js; do
+            echo "checking $file"
+            node --check "$file"
+          done
+          node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json', 'utf8')); console.log('manifest.json parses')"
+
+      - name: Run tests
+        run: npm test
