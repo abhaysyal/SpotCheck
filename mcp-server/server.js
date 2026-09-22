@@ -29,16 +29,43 @@ import { listAnnotations, getAnnotation } from "./mcp-tools.js";
 
 const PORT = 8934; // fixed for this pass, see spec.md's "Known limitations"
 
-// Set when starting this server — an unpacked extension's id is derived
-// from its filesystem path (differs per machine/checkout); a Chrome Web
-// Store-published one has a fixed id. Never hardcode a placeholder here.
-const EXTENSION_ORIGIN = process.env.SPOTCHECK_EXTENSION_ORIGIN;
-if (!EXTENSION_ORIGIN || !EXTENSION_ORIGIN.startsWith("chrome-extension://")) {
+// Fill this in the moment SpotCheck is published: a Chrome Web Store
+// extension's id is fixed and public, so hardcoding it here is safe and
+// gives every end user exact-origin matching with zero setup. Until then it
+// stays null, because an *unpacked* extension's id varies per machine and
+// per checkout — there is no correct value to ship.
+const PUBLISHED_EXTENSION_ORIGIN = null;
+
+// An explicit pin, if there is one: the env var (usually from mcp-server/.env)
+// wins, then the published id. When neither exists we fall back to accepting
+// any chrome-extension:// origin — see isAllowedSyncOrigin below for exactly
+// what that does and doesn't protect against.
+const EXTENSION_ORIGIN = process.env.SPOTCHECK_EXTENSION_ORIGIN || PUBLISHED_EXTENSION_ORIGIN;
+if (process.env.SPOTCHECK_EXTENSION_ORIGIN && !EXTENSION_ORIGIN.startsWith("chrome-extension://")) {
+  // Set but malformed is a typo, not a preference — fail loudly rather than
+  // silently rejecting every push the extension makes.
   console.error(
-    "SPOTCHECK_EXTENSION_ORIGIN must be set to the loaded extension's real chrome-extension://<id> origin " +
-      "(check chrome://extensions with Developer mode on). Refusing to start without it — see spec.md's Security section."
+    `SPOTCHECK_EXTENSION_ORIGIN is set to "${process.env.SPOTCHECK_EXTENSION_ORIGIN}", which is not a ` +
+      "chrome-extension://<id> origin. Fix it or unset it (it is optional). Refusing to start."
   );
   process.exit(1);
+}
+
+// The threat this actually defends against is a **web page** — any tab the
+// user has open can fetch('http://127.0.0.1:8934/sync') and poison the queue.
+// The browser sets Origin itself and page script cannot override it, so
+// rejecting everything that isn't a chrome-extension:// origin stops that
+// class outright, pin or no pin.
+//
+// What the pin adds on top is narrow: it stops a *different installed
+// extension* from overwriting the queue. It adds nothing against a
+// non-browser local process (curl, malware), which can forge any Origin
+// header it likes — including a published extension's id, which is public.
+// That's the trade being made by defaulting to unpinned: zero setup, in
+// exchange for trusting other extensions the user has chosen to install.
+function isAllowedSyncOrigin(origin) {
+  if (typeof origin !== "string" || !origin.startsWith("chrome-extension://")) return false;
+  return EXTENSION_ORIGIN ? origin === EXTENSION_ORIGIN : true;
 }
 
 function buildServer() {
@@ -87,11 +114,14 @@ const app = createMcpExpressApp({ host: "127.0.0.1" });
 const SYNC_BODY_LIMIT = 25 * 1024 * 1024; // 25MB — generous for dozens of cropped element screenshots
 
 function handleSync(req, res) {
-  // Same origin check as before — a real webpage's fetch always carries its
-  // true page origin and cannot spoof this header.
+  // A real webpage's fetch always carries its true page origin and cannot
+  // spoof this header, so this is what keeps a stray tab out.
   const origin = req.headers.origin;
-  if (origin !== EXTENSION_ORIGIN) {
-    console.warn(`/sync rejected — origin was "${origin}", expected "${EXTENSION_ORIGIN}"`);
+  if (!isAllowedSyncOrigin(origin)) {
+    console.warn(
+      `/sync rejected — origin was "${origin}", expected ` +
+        (EXTENSION_ORIGIN ? `"${EXTENSION_ORIGIN}"` : "a chrome-extension:// origin")
+    );
     res.writeHead(403).end();
     return;
   }
@@ -128,12 +158,17 @@ function handleSync(req, res) {
 
 app.post("/mcp", async (req, res) => {
   // A legitimate MCP client (Claude Code, running locally) never sends a
-  // browser Origin header at all. A stray webpage's fetch always does.
-  // Rejecting any http(s) origin here is a second, independent layer on top
-  // of createMcpExpressApp's own Host-header DNS-rebinding protection — no
-  // token/auth handshake beyond these two checks in this pass (see spec.md).
+  // browser Origin header at all. Anything in a browser always does — so
+  // reject *every* origin, not just http(s). Nothing in SpotCheck's own
+  // extension calls this endpoint (background.js only POSTs to /sync), so
+  // allowing chrome-extension:// origins here bought nothing and left the
+  // whole annotation queue readable by any other installed extension. This
+  // is a second, independent layer on top of createMcpExpressApp's own
+  // Host-header DNS-rebinding protection — no token/auth handshake beyond
+  // these two checks in this pass (see spec.md).
   const origin = req.headers.origin;
-  if (origin && /^https?:\/\//.test(origin)) {
+  if (origin) {
+    console.warn(`/mcp rejected — request carried a browser Origin header ("${origin}")`);
     res.status(403).end();
     return;
   }
@@ -181,5 +216,10 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`SpotCheck MCP server listening on http://127.0.0.1:${PORT}`);
-  console.log(`Accepting queue syncs only from: ${EXTENSION_ORIGIN}`);
+  console.log(
+    EXTENSION_ORIGIN
+      ? `Accepting queue syncs only from: ${EXTENSION_ORIGIN}`
+      : "Accepting queue syncs from any chrome-extension:// origin (all web pages rejected). " +
+          "Set SPOTCHECK_EXTENSION_ORIGIN to pin one extension."
+  );
 });

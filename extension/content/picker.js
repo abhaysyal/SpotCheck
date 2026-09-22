@@ -15,6 +15,18 @@ window.__spotcheck = window.__spotcheck || {};
     if (!hitEl || hitEl === spotcheck.state.hoveredElement) return;
     spotcheck.state.hoveredElement = hitEl;
     spotcheck.overlay.showHighlight(hitEl, "hover");
+    // Feature 9 — announce the hover so capture.js can ask the MAIN-world
+    // probe what component this is, and overlay.js can label the box with
+    // the answer. Fired only when the hovered element actually *changes*
+    // (the early return above), not on every mousemove. Carries the pointer
+    // coordinates so the probe can re-resolve the node without capture.js
+    // having to build a selector path per hover — see component-probe.js's
+    // resolveTarget.
+    document.dispatchEvent(
+      new CustomEvent("spotcheck:element-hovered", {
+        detail: { element: hitEl, x: e.clientX, y: e.clientY },
+      })
+    );
   }
 
   function onClick(e) {

@@ -106,9 +106,21 @@ window.__spotcheck = window.__spotcheck || {};
       lines.push("");
       lines.push(`**Note:** ${a.note}`);
 
-      if (a.component && a.component.name) {
+      // Feature 8 — name + source + confidence, plus a source file path and
+      // an ancestry breadcrumb when the framework/dev-build exposed them.
+      if (a.component && (a.component.name || a.component.sourcePath)) {
+        const c = a.component;
         lines.push("");
-        lines.push(`**Component:** ${a.component.name} (${a.component.source})`);
+        let tag = `${c.name || "(unnamed)"} (${c.source}`;
+        if (c.confidence) tag += `, ${c.confidence}`;
+        tag += c.confidence === "low" ? " — name may be minified)" : ")";
+        let line = `**Component:** ${tag}`;
+        if (c.sourcePath) line += ` — ${c.sourcePath}${c.sourceLine ? ":" + c.sourceLine : ""}`;
+        lines.push(line);
+        if (Array.isArray(c.ancestry) && c.ancestry.length > 1) {
+          lines.push("");
+          lines.push(`**Component tree:** ${c.ancestry.join(" › ")}`); // ›
+        }
       }
 
       if (a.styles) {
