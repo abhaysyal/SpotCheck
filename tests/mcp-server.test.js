@@ -15,12 +15,14 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createConnection } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const SERVER_DIR = new URL("../mcp-server/", import.meta.url);
-const SERVER_URL = "http://127.0.0.1:8934";
+const SERVER_PORT = 8934; // matches server.js's PORT, "fixed for this pass" per its own comment
+const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const EXTENSION_A = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const EXTENSION_B = "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -51,27 +53,60 @@ function startServer({ pin } = {}) {
     });
     child = proc;
 
+    const settle = (fn) => {
+      clearTimeout(startupTimer);
+      fn();
+    };
+
     let output = "";
     const onData = (buf) => {
       output += buf.toString();
       // "Accepting queue syncs..." is the last line of a successful start;
       // waiting on "listening on" instead raced the policy line.
-      if (output.includes("Accepting queue syncs")) resolve({ proc, output: () => output });
+      if (output.includes("Accepting queue syncs")) {
+        settle(() => resolve({ proc, output: () => output }));
+      }
     };
     proc.stdout.on("data", onData);
     proc.stderr.on("data", onData);
     proc.on("exit", (code) => {
       if (output.includes("EADDRINUSE")) {
-        reject(
-          new Error(
-            "Port 8934 is already in use — stop any running SpotCheck MCP server before running these tests."
+        settle(() =>
+          reject(
+            new Error(
+              "Port 8934 is already in use — stop any running SpotCheck MCP server before running these tests."
+            )
           )
         );
         return;
       }
-      resolve({ proc, output: () => output, exitCode: code });
+      settle(() => resolve({ proc, output: () => output, exitCode: code }));
     });
-    setTimeout(() => reject(new Error(`server did not start; output:\n${output}`)), 10000);
+    const startupTimer = setTimeout(
+      () => reject(new Error(`server did not start; output:\n${output}`)),
+      10000
+    );
+  });
+}
+
+// Polls for the port actually being free rather than assuming a fixed delay
+// is enough — a slow-exiting child can still hold the socket well past any
+// flat wait, and the next startServer() would then race it for the port.
+function waitForPortFree(timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    (function attempt() {
+      const sock = createConnection({ port: SERVER_PORT, host: "127.0.0.1" });
+      sock.once("connect", () => {
+        sock.destroy();
+        if (Date.now() >= deadline) return resolve();
+        setTimeout(attempt, 20);
+      });
+      sock.once("error", () => {
+        sock.destroy();
+        resolve(); // connection refused — nothing is listening, port is free
+      });
+    })();
   });
 }
 
@@ -83,12 +118,22 @@ async function stopServer() {
   const proc = child;
   child = null;
   await new Promise((resolve) => {
-    proc.on("exit", resolve);
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(escalateTimer);
+      clearTimeout(giveUpTimer);
+      resolve();
+    };
+    proc.on("exit", done);
     proc.kill();
-    setTimeout(resolve, 2000);
+    const escalateTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
+    // Must never hang the suite even if SIGKILL somehow never produces an
+    // 'exit' event — give up and let waitForPortFree still confirm the port.
+    const giveUpTimer = setTimeout(done, 3000);
   });
-  // Give the OS a moment to release the port before the next child binds it.
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  await waitForPortFree();
 }
 
 function sync(origin, body = { annotations: [] }) {

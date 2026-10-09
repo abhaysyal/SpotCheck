@@ -70,6 +70,23 @@ describe("selector path", () => {
     assert.equal(captured[0].selector, "body > main");
   });
 
+  test("a digit-leading id degrades to the structural path instead of crashing capture", async () => {
+    // Raw "#1submit" isn't a parseable selector — a CSS id selector can't
+    // start with an unescaped digit. Before CSS.escape hex-escaped it, this
+    // threw a SyntaxError out of getSelectorPath's querySelectorAll call,
+    // caught by capture.js's own try/catch, which logged a warning and left
+    // the whole selector null instead of falling back to the structural path
+    // the way every other non-unique-id case does.
+    const button = page.document.querySelector("#submit");
+    button.id = "1submit";
+    const captured = page.recordEvents("spotcheck:element-captured");
+
+    select(button);
+
+    assert.equal(captured[0].selector, "body > main > section:nth-of-type(1) > button");
+    assert.deepEqual(page.consoleMessages, []);
+  });
+
   test("returns 'html' for the root element rather than an empty string", async () => {
     const captured = page.recordEvents("spotcheck:element-captured");
 

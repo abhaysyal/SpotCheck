@@ -24,18 +24,10 @@ import { readFileSync } from "node:fs";
 
 const CONTENT_DIR = new URL("../../extension/content/", import.meta.url);
 
-// Load order matters the same way it does in background.js's CONTENT_FILES:
-// state.js must come first because overlay.js and picker.js reach into
-// spotcheck.state / spotcheck.uiHosts as soon as they run.
-export const ISOLATED_SCRIPTS = [
-  "state.js",
-  "overlay.js",
-  "picker.js",
-  "capture.js",
-  "queue.js",
-  "annotations.js",
-  "export.js",
-];
+// Whatever subset of the isolated-world scripts a test loads via createPage's
+// `scripts` option, order matters the same way it does in background.js's
+// CONTENT_FILES: state.js must come first because overlay.js and picker.js
+// reach into spotcheck.state / spotcheck.uiHosts as soon as they run.
 
 /**
  * Re-create a value in Node's realm so assert.deepStrictEqual can compare it.
@@ -145,18 +137,22 @@ export function createPage(options = {}) {
     probe(target, timeoutMs = 500) {
       return new Promise((resolve) => {
         const nonce = `test-${Math.random().toString(16).slice(2)}`;
+        // window.setTimeout, not Node's — see installBrowserShims below for
+        // why a Node timer left pending past page.close() is a real problem,
+        // not just tidiness.
+        const timer = window.setTimeout(() => {
+          window.removeEventListener("message", onMessage);
+          resolve("NO_REPLY");
+        }, timeoutMs);
         const onMessage = (event) => {
           const d = event.data;
           if (!d || d.__spotcheck !== "probe-response" || d.nonce !== nonce) return;
+          window.clearTimeout(timer);
           window.removeEventListener("message", onMessage);
           resolve(d.component);
         };
         window.addEventListener("message", onMessage);
         window.postMessage({ __spotcheck: "probe-request", nonce, ...target }, "*");
-        setTimeout(() => {
-          window.removeEventListener("message", onMessage);
-          resolve("NO_REPLY");
-        }, timeoutMs);
       });
     },
 
@@ -191,8 +187,24 @@ function installBrowserShims(window) {
   // what can legally appear in an id and would otherwise break a selector.
   if (!window.CSS) window.CSS = {};
   if (typeof window.CSS.escape !== "function") {
-    window.CSS.escape = (value) =>
-      String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+    window.CSS.escape = (value) => {
+      const str = String(value);
+      // A leading digit — or a leading "-" immediately followed by one —
+      // must be hex-escaped per the real CSS.escape spec: an id starting
+      // with a digit is legal HTML, and a plain backslash-prefix (what this
+      // shim did before) produces a selector jsdom's querySelectorAll
+      // rejects as invalid.
+      const digitAt = str[0] === "-" ? 1 : 0;
+      if (/[0-9]/.test(str[digitAt] || "")) {
+        const prefix = str.slice(0, digitAt); // "" or "-"
+        const escapedDigit = `\\${str.codePointAt(digitAt).toString(16)} `;
+        const rest = str
+          .slice(digitAt + 1)
+          .replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+        return prefix + escapedDigit + rest;
+      }
+      return str.replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+    };
   }
 
   // jsdom performs no layout, so it implements no elementFromPoint at all.
