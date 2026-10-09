@@ -39,6 +39,15 @@ No bundler, no ES modules in content scripts (MV3 `executeScript`-injected class
 
 Whenever you create or change anything in `extension/` — especially `manifest.json`'s `permissions`/`host_permissions`, or anything about what data the extension reads, stores, or transmits — update `CHROMEWEBSTORE.md` at the repo root to match. It tracks the Developer Dashboard submission info: single purpose statement, a justification per permission, data usage disclosure, and remote-code disclosure. Keep it accurate as the extension evolves, not just written once — a stale permission justification is worse than none, since it actively misleads whoever copies it into the Dashboard at submission time.
 
+## Tests
+
+`npm install` once, then `npm test` (Node's built-in runner + jsdom, ~15s). **Run it before calling any change to `extension/` or `mcp-server/` done**, and add cases alongside behaviour you change — `tests/README.md` explains the harness, the three jsdom shims it installs, and what's covered where.
+
+Two things to know before writing a test here:
+
+- **Drive the public contracts, don't reach inside.** The content scripts export nothing (see "Content script structure" above), so tests go through `CustomEvent`s on `document`, `window.postMessage`, the `SPOTCHECK_SET_ACTIVE` broadcast, and clicks on the shadow-DOM UI — the same ways the extension drives itself. A failing test should mean a contract broke.
+- **jsdom cannot test the isolated/MAIN world split.** It has one JS realm, so `capture.js` and `component-probe.js` end up in the same scope there. The message contract between them is covered; "can the isolated world see `el.__reactFiber$*`" is not — and that is precisely the bug Feature 8 shipped with. Anything touching the world split still needs live browser verification against a real dev build, per `docs/features/feature-9-hover-component-labels/plan.md`.
+
 ## When in doubt
 
 Check `PROJECT.md` §7 (prior art) before reinventing something — VisBug, Agentation, and Markagent/DOM Review all solved pieces of this problem already and are worth a quick look before writing new logic from scratch, especially for the picker/overlay mechanics.
