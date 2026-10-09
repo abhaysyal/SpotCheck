@@ -9,10 +9,13 @@ on:
 permissions:
   contents: read
 
-# A new push to the same branch supersedes an in-flight run.
+# A new push to the same PR branch supersedes an in-flight run. Scoped to
+# pull_request only — cancelling an in-progress run on main would show as
+# "cancelled" rather than a real pass/fail, masking main's actual post-merge
+# test status when two merges land in quick succession.
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
